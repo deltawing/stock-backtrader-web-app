@@ -1,14 +1,14 @@
 import unittest
-from datetime import datetime
-from typing import Type
+from typing import Any, Dict, Optional, Type
 
 import akshare as ak
 import backtrader as bt
-import backtrader.analyzers as btanalyzers
 import pandas as pd
 
 from strategy.base import BaseStrategy
+from utils.backtest import setup_cerebro, _extract_results
 from utils.load import load_strategy
+from utils.schemas import BacktraderParams
 
 
 class StrategyTest(unittest.TestCase):
@@ -21,22 +21,16 @@ class StrategyTest(unittest.TestCase):
         stock_hfq_df = ak.stock_zh_a_hist(symbol="600070", adjust="hfq", start_date="20230101", end_date="20250101")
         stock_hfq_df = stock_hfq_df[["日期", "开盘", "收盘", "最高", "最低", "成交量"]]
         stock_hfq_df.columns = ["date", "open", "close", "high", "low", "volume"]
-        stock_hfq_df.index = pd.to_datetime(stock_hfq_df["date"])
-        start_date = datetime(2024, 1, 1)
-        end_date = datetime(2025, 1, 1)
-        data = bt.feeds.PandasData(dataname=stock_hfq_df, fromdate=start_date, todate=end_date)
 
-        # 设置回测引擎
-        self.cerebro = cerebro = bt.Cerebro()
-        cerebro.adddata(data)
-        cerebro.broker.setcash(1000000)
-        cerebro.broker.setcommission(commission=0.001)
-        cerebro.addsizer(bt.sizers.FixedSize, stake=100)
-
-        # 添加分析器
-        cerebro.addanalyzer(btanalyzers.SharpeRatio, _name="sharpe")
-        cerebro.addanalyzer(btanalyzers.DrawDown, _name="drawdown")
-        cerebro.addanalyzer(btanalyzers.Returns, _name="returns")
+        # 通过统一引擎设置 cerebo
+        bt_params = BacktraderParams(
+            start_date=pd.to_datetime("2024-01-01"),
+            end_date=pd.to_datetime("2025-01-01"),
+            start_cash=1000000,
+            commission_fee=0.001,
+            stake=100,
+        )
+        self.cerebro = setup_cerebro(stock_hfq_df, bt_params)
 
         # 加载策略配置
         self.strategys = load_strategy("./config/strategy.yaml")
@@ -49,12 +43,12 @@ class StrategyTest(unittest.TestCase):
 
 
 def run_back_trader(cerebro: bt.Cerebro, strategy: Type[BaseStrategy], **kwargs) -> pd.DataFrame:
-    """运行回测
+    """运行回测（委托给统一引擎的提取逻辑）
 
     Args:
         cerebro (bt.Cerebro): 回测引擎
         strategy (Type[BaseStrategy]): 策略类
-        **kwargs: 策略参数
+        **kwargs: 策略参数字典，值为单值或 range
 
     Returns:
         pd.DataFrame: 回测结果
@@ -65,26 +59,5 @@ def run_back_trader(cerebro: bt.Cerebro, strategy: Type[BaseStrategy], **kwargs)
     # 运行回测
     back = cerebro.run(maxcpus=1)
 
-    # 处理回测结果
-    par_list = []
-    for x in back:
-        # 收集策略参数
-        par = []
-        for param in kwargs.keys():
-            par.append(x[0].params._getkwargs()[param])
-
-        # 添加性能指标
-        par.extend(
-            [
-                x[0].analyzers.returns.get_analysis()["rnorm100"],
-                x[0].analyzers.drawdown.get_analysis()["max"]["drawdown"],
-                x[0].analyzers.sharpe.get_analysis()["sharperatio"],
-            ]
-        )
-        par_list.append(par)
-
-    # 创建结果数据框
-    columns = list(kwargs.keys())
-    columns.extend(["return", "dd", "sharpe"])
-    par_df = pd.DataFrame(par_list, columns=columns)
-    return par_df
+    # 提取结果
+    return _extract_results(back, list(kwargs.keys()))
